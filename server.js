@@ -33,8 +33,9 @@ function isOpenNow(){
   return ranges.some(([start,end]) => minutes >= start && minutes < end);
 }
 
-// === Tabellen anlegen ===
+// === Tabellen anlegen/erweitern ===
 async function initDb(){
+  // Products-Tabelle
   await pool.query(`CREATE TABLE IF NOT EXISTS products (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
@@ -44,13 +45,12 @@ async function initDb(){
     category TEXT
   );`);
 
+  // Orders-Tabelle
   await pool.query(`CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     customer_name TEXT NOT NULL,
     customer_phone TEXT NOT NULL,
     customer_address TEXT NOT NULL,
-    customer_plz TEXT,
-    customer_city TEXT,
     items JSONB NOT NULL,
     total REAL NOT NULL,
     payment TEXT NOT NULL,
@@ -58,6 +58,11 @@ async function initDb(){
     created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );`);
 
+  // Spalten ergänzen falls fehlen
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_plz TEXT;`);
+  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_city TEXT;`);
+
+  // Coupons-Tabelle
   await pool.query(`CREATE TABLE IF NOT EXISTS coupons (
     id SERIAL PRIMARY KEY,
     code TEXT UNIQUE,
