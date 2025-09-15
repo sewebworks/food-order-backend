@@ -1,16 +1,14 @@
-Food Order Backend (Render)
---------------------------
-Endpoints:
- - GET  /api/health
- - GET  /api/config   -> { stripeEnabled: bool, currency: 'CHF' }
- - GET  /api/products
- - POST /api/products {name, price, image_url}
- - PATCH/DELETE /api/products/:id
- - POST /api/orders   {customer: {name,phone,address}, items: [{id,name,price,qty}], payment}
- - GET  /api/orders   (simple admin fetch)
- - GET  /api/orders/:id
+# Food Order Backend (Postgres)
 
- - POST /api/pay/stripe/session  (optional, requires STRIPE_SECRET_KEY)
+## Setup
+1. DATABASE_URL in Render Environment setzen
+2. npm install
+3. npm start
 
-Env vars:
- - FRONTEND_URL, ALLOWED_ORIGIN, DB_PATH, STRIPE_SECRET_KEY
+## API
+- GET /api/health
+- GET /api/products
+- POST /api/products
+- DELETE /api/products/:id
+- GET /api/orders
+- POST /api/orders
