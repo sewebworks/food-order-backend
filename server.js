@@ -14,7 +14,6 @@ const pool = new Pool({
 });
 
 // === Öffnungszeiten definieren ===
-// Minuten seit Mitternacht
 const openingHours = {
   0: [ [17*60, 22*60 - 15] ],                           // Sonntag 17:00–21:45
   1: [],                                                // Montag geschlossen
@@ -25,9 +24,16 @@ const openingHours = {
   6: [ [17*60, 23*60 - 15] ]                            // Samstag
 };
 
+// === Override Status ===
+let overrideStatus = null; 
+// null = normale Zeiten, "open" = immer offen, "closed" = immer zu
+
 function isOpenNow(){
+  if (overrideStatus === "open") return true;
+  if (overrideStatus === "closed") return false;
+
   const now = new Date();
-  const day = now.getDay(); // 0=Sonntag
+  const day = now.getDay(); 
   const minutes = now.getHours() * 60 + now.getMinutes();
   const ranges = openingHours[day] || [];
   return ranges.some(([start,end]) => minutes >= start && minutes < end);
@@ -35,7 +41,6 @@ function isOpenNow(){
 
 // === Tabellen anlegen/erweitern ===
 async function initDb(){
-  // Products-Tabelle
   await pool.query(`CREATE TABLE IF NOT EXISTS products (
     id SERIAL PRIMARY KEY,
     name TEXT NOT NULL,
@@ -45,7 +50,6 @@ async function initDb(){
     category TEXT
   );`);
 
-  // Orders-Tabelle
   await pool.query(`CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     customer_name TEXT NOT NULL,
@@ -58,11 +62,9 @@ async function initDb(){
     created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );`);
 
-  // Spalten ergänzen falls fehlen
   await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_plz TEXT;`);
   await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_city TEXT;`);
 
-  // Coupons-Tabelle
   await pool.query(`CREATE TABLE IF NOT EXISTS coupons (
     id SERIAL PRIMARY KEY,
     code TEXT UNIQUE,
@@ -70,6 +72,20 @@ async function initDb(){
   );`);
 }
 initDb().catch(err => console.error("DB init error:", err));
+
+// === Status Endpoints ===
+app.get("/api/status", (req,res) => {
+  res.json({ override: overrideStatus, open: isOpenNow() });
+});
+
+app.post("/api/status", (req,res) => {
+  const { status } = req.body;
+  if (["open","closed",null].includes(status)) {
+    overrideStatus = status;
+    return res.json({ success:true, override: status });
+  }
+  res.status(400).json({ error:"Status muss 'open', 'closed' oder null sein" });
+});
 
 // === Health ===
 app.get("/api/health", (req,res) => res.json({ ok:true, open:isOpenNow() }));
