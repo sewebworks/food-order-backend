@@ -20,32 +20,41 @@ app.use(bodyParser.json());
 
 const DB_PATH = process.env.DB_PATH || "./db.sqlite";
 const db = new sqlite3.Database(DB_PATH);
+
+// === DB SETUP ===
 db.serialize(() => {
   db.run(`PRAGMA foreign_keys = ON;`);
   db.run(`CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    description TEXT,
     price REAL NOT NULL,
-    image_url TEXT
+    image_url TEXT,
+    category TEXT
   );`);
   db.run(`CREATE TABLE IF NOT EXISTS orders (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    customer_name TEXT,
-    customer_phone TEXT,
-    customer_address TEXT,
+    customer_name TEXT NOT NULL,
+    customer_phone TEXT NOT NULL,
+    customer_address TEXT NOT NULL,
     items TEXT NOT NULL,
     total REAL NOT NULL,
     payment TEXT NOT NULL,
     status TEXT DEFAULT 'new',
     created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   );`);
+  db.run(`CREATE TABLE IF NOT EXISTS coupons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT UNIQUE,
+    discount_percent REAL
+  );`);
 });
 
 const stripeEnabled = !!process.env.STRIPE_SECRET_KEY;
 const stripe = stripeEnabled ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
 
+// === ROUTES ===
 app.get("/api/health", (req,res) => res.json({ ok:true }));
-app.get("/api/config", (req,res) => res.json({ stripeEnabled, currency: "CHF" }));
 
 // Products
 app.get("/api/products", (req,res) => {
@@ -56,24 +65,13 @@ app.get("/api/products", (req,res) => {
 });
 
 app.post("/api/products", (req,res) => {
-  const { name, price, image_url } = req.body;
+  const { name, description, price, image_url, category } = req.body;
   if (!name || typeof price !== "number") return res.status(400).json({error:"name and numeric price required"});
-  db.run("INSERT INTO products (name, price, image_url) VALUES (?,?,?)",
-    [name, price, image_url || null],
+  db.run("INSERT INTO products (name, description, price, image_url, category) VALUES (?,?,?,?,?)",
+    [name, description || null, price, image_url || null, category || null],
     function(err){
       if (err) return res.status(500).json({ error: err.message });
-      res.json({ id: this.lastID, name, price, image_url: image_url || null });
-    });
-});
-
-app.patch("/api/products/:id", (req,res) => {
-  const { id } = req.params;
-  const { name, price, image_url } = req.body;
-  db.run("UPDATE products SET name = COALESCE(?, name), price = COALESCE(?, price), image_url = COALESCE(?, image_url) WHERE id = ?",
-    [name ?? null, typeof price === "number" ? price : null, image_url ?? null, id],
-    function(err){
-      if (err) return res.status(500).json({ error: err.message });
-      res.json({ updated: this.changes > 0 });
+      res.json({ id: this.lastID, name, description, price, image_url: image_url || null, category });
     });
 });
 
@@ -85,41 +83,48 @@ app.delete("/api/products/:id", (req,res) => {
   });
 });
 
-// Orders
+// Helper
 function calcTotal(items){
   if (!Array.isArray(items)) return 0;
   return items.reduce((sum, it) => sum + (Number(it.price) * (Number(it.qty)||1)), 0);
 }
 
-app.post("/api/orders", (req,res) => {
-  const { customer, items, payment } = req.body;
-  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({error:"items required"});
-  const total = calcTotal(items);
-  const name = customer?.name || null;
-  const phone = customer?.phone || null;
-  const address = customer?.address || null;
-  const pay = payment || "Bar";
-
+function saveOrder(customer, items, payment, total, res){
   db.run("INSERT INTO orders (customer_name, customer_phone, customer_address, items, total, payment) VALUES (?,?,?,?,?,?)",
-    [name, phone, address, JSON.stringify(items), total, pay],
+    [customer.name, customer.phone, customer.address, JSON.stringify(items), total, payment],
     function(err){
       if (err) return res.status(500).json({ error: err.message });
       res.json({ id: this.lastID, total, status: "received" });
     });
+}
+
+// Orders with coupons
+app.post("/api/orders", (req,res) => {
+  const { customer, items, payment, coupon } = req.body;
+  if (!customer?.name || !customer?.phone || !customer?.address) {
+    return res.status(400).json({ error:"Name, Telefon und Adresse sind Pflichtfelder" });
+  }
+  if (!Array.isArray(items) || items.length === 0) return res.status(400).json({error:"items required"});
+
+  let total = calcTotal(items);
+
+  if (coupon) {
+    db.get("SELECT * FROM coupons WHERE code = ?", [coupon], (err, row) => {
+      if (row) {
+        total = total - (total * row.discount_percent / 100);
+      }
+      saveOrder(customer, items, payment, total, res);
+    });
+  } else {
+    saveOrder(customer, items, payment, total, res);
+  }
 });
 
+// Orders Admin
 app.get("/api/orders", (req,res) => {
   db.all("SELECT id, customer_name, total, payment, status, created FROM orders ORDER BY id DESC LIMIT 200", [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
     res.json(rows);
-  });
-});
-
-app.get("/api/orders/:id", (req,res) => {
-  const { id } = req.params;
-  db.get("SELECT * FROM orders WHERE id = ?", [id], (err, row) => {
-    if (err) return res.status(500).json({ error: err.message });
-    res.json(row || {});
   });
 });
 
@@ -139,8 +144,8 @@ app.post("/api/pay/stripe/session", async (req,res) => {
       quantity: Number(it.qty) || 1
     }));
 
-    const success_url = `${process.env.FRONTEND_URL || ""}/success.html` || "https://example.com/success.html";
-    const cancel_url = `${process.env.FRONTEND_URL || ""}/cancel.html` || "https://example.com/cancel.html";
+    const success_url = `${process.env.FRONTEND_URL || ""}/success.html`;
+    const cancel_url = `${process.env.FRONTEND_URL || ""}/cancel.html`;
 
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
