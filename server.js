@@ -164,3 +164,12 @@ app.listen(PORT, () => {
   console.log(`API listening on port ${PORT}`);
   console.log(`DB: ${DB_PATH}`);
 });
+// Update Order-Status
+app.post("/api/orders/:id/status", (req,res) => {
+  const { id } = req.params;
+  const { status } = req.body;
+  db.run("UPDATE orders SET status = ? WHERE id = ?", [status, id], function(err){
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ updated: this.changes > 0 });
+  });
+});
