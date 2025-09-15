@@ -49,6 +49,21 @@ db.serialize(() => {
     discount_percent REAL
   );`);
 });
+// === Migration: fehlende Spalten nachrüsten ===
+db.all("PRAGMA table_info(products)", [], (err, cols) => {
+  if (err) return console.error("DB check error", err);
+  const colNames = cols.map(c => c.name);
+  if (!colNames.includes("description")) {
+    db.run("ALTER TABLE products ADD COLUMN description TEXT", () => {
+      console.log("Spalte 'description' ergänzt");
+    });
+  }
+  if (!colNames.includes("category")) {
+    db.run("ALTER TABLE products ADD COLUMN category TEXT", () => {
+      console.log("Spalte 'category' ergänzt");
+    });
+  }
+});
 
 const stripeEnabled = !!process.env.STRIPE_SECRET_KEY;
 const stripe = stripeEnabled ? new Stripe(process.env.STRIPE_SECRET_KEY) : null;
