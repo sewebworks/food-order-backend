@@ -1,185 +1,155 @@
-import express from "express";
-import bodyParser from "body-parser";
-import cors from "cors";
-import pkg from "pg";
-const { Pool } = pkg;
+const express = require("express");
+const bodyParser = require("body-parser");
+const cors = require("cors");
+const { Pool } = require("pg");
 
 const app = express();
-app.use(cors({ origin: "*" }));
+app.use(cors());
 app.use(bodyParser.json());
 
-const pool = new Pool({
+// === DB Verbindung ===
+const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// === Öffnungszeiten definieren ===
-const openingHours = {
-  0: [ [17*60, 22*60 - 15] ],                           // Sonntag 17:00–21:45
-  1: [],                                                // Montag geschlossen
-  2: [ [11*60+30, 13*60+30], [17*60, 22*60 - 15] ],     // Dienstag
-  3: [ [11*60+30, 13*60+30], [17*60, 22*60 - 15] ],     // Mittwoch
-  4: [ [11*60+30, 13*60+30], [17*60, 22*60 - 15] ],     // Donnerstag
-  5: [ [11*60+30, 13*60+30], [17*60, 23*60 - 15] ],     // Freitag
-  6: [ [17*60, 23*60 - 15] ]                            // Samstag
-};
-
-// === Override Status ===
-let overrideStatus = null; 
-// null = normale Zeiten, "open" = immer offen, "closed" = immer zu
-
-function isOpenNow(){
-  if (overrideStatus === "open") return true;
-  if (overrideStatus === "closed") return false;
-
-  const now = new Date();
-  const day = now.getDay(); 
-  const minutes = now.getHours() * 60 + now.getMinutes();
-  const ranges = openingHours[day] || [];
-  return ranges.some(([start,end]) => minutes >= start && minutes < end);
-}
-
-// === Tabellen anlegen/erweitern ===
-async function initDb(){
-  await pool.query(`CREATE TABLE IF NOT EXISTS products (
-    id SERIAL PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT,
-    price REAL NOT NULL,
-    image_url TEXT,
-    category TEXT
-  );`);
-
-  await pool.query(`CREATE TABLE IF NOT EXISTS orders (
-    id SERIAL PRIMARY KEY,
-    customer_name TEXT NOT NULL,
-    customer_phone TEXT NOT NULL,
-    customer_address TEXT NOT NULL,
-    items JSONB NOT NULL,
-    total REAL NOT NULL,
-    payment TEXT NOT NULL,
-    status TEXT DEFAULT 'neu',
-    created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  );`);
-
-  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_plz TEXT;`);
-  await pool.query(`ALTER TABLE orders ADD COLUMN IF NOT EXISTS customer_city TEXT;`);
-
-  await pool.query(`CREATE TABLE IF NOT EXISTS coupons (
-    id SERIAL PRIMARY KEY,
-    code TEXT UNIQUE,
-    discount_percent REAL CHECK (discount_percent >= 0 AND discount_percent <= 100)
-  );`);
-}
-initDb().catch(err => console.error("DB init error:", err));
-
-// === Status Endpoints ===
-app.get("/api/status", (req,res) => {
-  res.json({ override: overrideStatus, open: isOpenNow() });
-});
-
-app.post("/api/status", (req,res) => {
-  const { status } = req.body;
-  if (["open","closed",null].includes(status)) {
-    overrideStatus = status;
-    return res.json({ success:true, override: status });
+// === Produkte laden ===
+app.get("/api/products", async (req, res) => {
+  try {
+    const result = await db.query("SELECT * FROM products ORDER BY id ASC");
+    res.json(result.rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Fehler beim Laden der Produkte" });
   }
-  res.status(400).json({ error:"Status muss 'open', 'closed' oder null sein" });
 });
 
-// === Health ===
-app.get("/api/health", (req,res) => res.json({ ok:true, open:isOpenNow() }));
-
-// === Produkte ===
-app.get("/api/products", async (req,res) => {
-  const result = await pool.query("SELECT * FROM products ORDER BY id DESC");
-  res.json(result.rows);
-});
-
-app.post("/api/products", async (req,res) => {
-  const { name, description, price, image_url, category } = req.body;
-  if (!name || typeof price !== "number") {
-    return res.status(400).json({error:"Name und Preis erforderlich"});
+// === Produkte hinzufügen ===
+app.post("/api/products", async (req, res) => {
+  try {
+    const { name, description, price, image_url, category, highlight } = req.body;
+    await db.query(
+      "INSERT INTO products (name, description, price, image_url, category, highlight) VALUES ($1,$2,$3,$4,$5,$6)",
+      [name, description, price, image_url, category, highlight]
+    );
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Fehler beim Speichern" });
   }
-  const q = `INSERT INTO products (name, description, price, image_url, category)
-             VALUES ($1,$2,$3,$4,$5) RETURNING *`;
-  const result = await pool.query(q, [name, description || "", price, image_url || "", category || ""]);
-  res.json(result.rows[0]);
 });
 
-app.delete("/api/products/:id", async (req,res) => {
-  const result = await pool.query("DELETE FROM products WHERE id=$1", [req.params.id]);
-  res.json({ deleted: result.rowCount > 0 });
+// === Produkte löschen ===
+app.delete("/api/products/:id", async (req, res) => {
+  try {
+    await db.query("DELETE FROM products WHERE id=$1", [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Fehler beim Löschen" });
+  }
 });
 
 // === Coupons ===
-app.get("/api/coupons", async (_req,res) => {
-  const r = await pool.query("SELECT id, code, discount_percent FROM coupons ORDER BY id DESC");
-  res.json(r.rows);
+app.get("/api/coupons", async (req, res) => {
+  try {
+    const result = await db.query("SELECT * FROM coupons ORDER BY id ASC");
+    res.json(result.rows);
+  } catch (e) {
+    res.status(500).json({ error: "Fehler beim Laden der Coupons" });
+  }
 });
 
-app.post("/api/coupons", async (req,res) => {
-  let { code, discount_percent } = req.body;
-  if (!code) return res.status(400).json({ error: "Code erforderlich" });
-  discount_percent = Number(discount_percent);
-  if (Number.isNaN(discount_percent) || discount_percent <= 0 || discount_percent > 100)
-    return res.status(400).json({ error: "Rabatt in % (1–100) erforderlich" });
-
-  code = String(code).trim().toUpperCase();
-  try{
-    const r = await pool.query(
-      "INSERT INTO coupons (code, discount_percent) VALUES ($1,$2) RETURNING id, code, discount_percent",
+app.post("/api/coupons", async (req, res) => {
+  try {
+    const { code, discount_percent } = req.body;
+    await db.query(
+      "INSERT INTO coupons (code, discount_percent) VALUES ($1,$2)",
       [code, discount_percent]
     );
-    res.json(r.rows[0]);
-  }catch(e){
-    if (e.code === "23505") return res.status(409).json({ error: "Code existiert bereits" });
-    res.status(500).json({ error: e.message });
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: "Fehler beim Speichern des Coupons" });
   }
 });
 
-app.delete("/api/coupons/:id", async (req,res) => {
-  const r = await pool.query("DELETE FROM coupons WHERE id=$1", [req.params.id]);
-  res.json({ deleted: r.rowCount > 0 });
+app.delete("/api/coupons/:id", async (req, res) => {
+  try {
+    await db.query("DELETE FROM coupons WHERE id=$1", [req.params.id]);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: "Fehler beim Löschen des Coupons" });
+  }
 });
 
-// === Orders ===
-app.post("/api/orders", async (req,res) => {
-  if(!isOpenNow()){
-    return res.status(403).json({ error:"Der Shop ist derzeit geschlossen. Bitte innerhalb der Öffnungszeiten bestellen." });
-  }
+// === Bestellung speichern ===
+app.post("/api/orders", async (req, res) => {
+  try {
+    const { customer, items, payment, coupon } = req.body;
 
-  const { customer, items, payment, coupon } = req.body;
-  if (!customer?.name || !customer?.phone || !customer?.address || !customer?.plz || !customer?.city) {
-    return res.status(400).json({ error:"Name, Telefon, Adresse, PLZ, Stadt sind Pflichtfelder" });
-  }
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({error:"items required"});
-  }
+    const result = await db.query(
+      "INSERT INTO orders (customer_name, customer_address, customer_plz, customer_city, customer_phone, payment, coupon) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id",
+      [customer.name, customer.address, customer.plz, customer.city, customer.phone, payment, coupon]
+    );
+    const orderId = result.rows[0].id;
 
-  let total = items.reduce((s,i) => s + i.price*i.qty, 0);
-
-  if (coupon) {
-    const c = await pool.query("SELECT * FROM coupons WHERE code=$1", [coupon.trim().toUpperCase()]);
-    if (c.rows.length > 0) {
-      total = total - (total * c.rows[0].discount_percent / 100);
+    for (let item of items) {
+      await db.query(
+        "INSERT INTO order_items (order_id, product_id, name, price, qty, note) VALUES ($1,$2,$3,$4,$5,$6)",
+        [orderId, item.id, item.name, item.price, item.qty, item.note || null]
+      );
     }
+
+    res.json({
+      id: orderId,
+      total: items.reduce((s, i) => s + i.price * i.qty, 0)
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Fehler beim Speichern der Bestellung" });
   }
-
-  const result = await pool.query(
-    `INSERT INTO orders (customer_name, customer_phone, customer_address, customer_plz, customer_city, items, total, payment) 
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id,total,status`,
-    [customer.name, customer.phone, customer.address, customer.plz, customer.city, JSON.stringify(items), total, payment]
-  );
-
-  res.json(result.rows[0]);
 });
 
-app.get("/api/orders", async (req,res) => {
-  const result = await pool.query("SELECT * FROM orders ORDER BY id DESC LIMIT 200");
-  res.json(result.rows);
+// === Bestellungen abrufen ===
+app.get("/api/orders", async (req, res) => {
+  try {
+    const result = await db.query(`
+      SELECT o.*, json_agg(json_build_object(
+        'id', i.product_id,
+        'name', i.name,
+        'price', i.price,
+        'qty', i.qty,
+        'note', i.note
+      )) as items
+      FROM orders o
+      JOIN order_items i ON i.order_id = o.id
+      GROUP BY o.id
+      ORDER BY o.id DESC
+    `);
+    res.json(result.rows);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: "Fehler beim Laden der Bestellungen" });
+  }
+});
+
+// === Shop Status ===
+let shopStatus = { override: null, open: true };
+
+app.get("/api/status", (req, res) => {
+  res.json({
+    ...shopStatus,
+    open: shopStatus.override === "open" ? true :
+          shopStatus.override === "closed" ? false : shopStatus.open,
+    nextOpen: "morgen 11:00"
+  });
+});
+
+app.post("/api/status", (req, res) => {
+  shopStatus.override = req.body.status || null;
+  res.json({ success: true });
 });
 
 // === Server Start ===
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API running on ${PORT}`));
+app.listen(PORT, () => console.log("Server läuft auf Port", PORT));
